@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Meta Ads Grade: {{ report.grade }}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #111; }
+        .container { max-width: 720px; margin: 0 auto; padding: 48px 20px; }
+        .card { background: white; border: 1px solid #e4e4e7; border-radius: 12px; padding: 32px; margin-bottom: 20px; }
+        .grade { font-size: 72px; font-weight: 700; letter-spacing: -1px; }
+        .score { color: #71717a; margin-top: 4px; }
+        .summary { margin-top: 16px; color: #3f3f46; line-height: 1.6; }
+        .category { padding: 14px 0; border-bottom: 1px solid #f4f4f5; }
+        .category:last-child { border-bottom: none; }
+        .category-name { font-weight: 600; }
+        .category-score { color: #71717a; font-weight: 500; margin-left: 8px; }
+        .category-notes { color: #52525b; font-size: 14px; margin-top: 4px; line-height: 1.5; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+        th, td { text-align: left; padding: 10px 6px; border-bottom: 1px solid #f4f4f5; }
+        th { color: #71717a; font-weight: 500; }
+        .btn { display: inline-block; background: #0a0a0a; color: white; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 8px; }
+        .btn:hover { background: #27272a; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div style="font-size: 14px; color: #71717a;">Your Meta Ads Grade</div>
+            <div class="grade">{{ report.grade }}</div>
+            <div class="score">Score: {{ report.score }}/100</div>
+            <p class="summary">{{ report.summary }}</p>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 12px; font-size: 18px;">Category Breakdown</h2>
+            {% for cat in report.categories %}
+            <div class="category">
+                <div class="category-name">{{ cat.name }}<span class="category-score">{{ cat.score }}/100</span></div>
+                {% for note in cat.notes %}
+                <div class="category-notes">{{ note }}</div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if report.insights %}
+        <div class="card">
+            <h2 style="margin-bottom: 4px; font-size: 18px;">Campaign Insights (Last 30 Days)</h2>
+            <table>
+                <tr><th>Campaign</th><th>Spend</th><th>Impressions</th><th>Clicks</th><th>CTR</th></tr>
+                {% for i in report.insights[:10] %}
+                <tr>
+                    <td>{{ i.campaign_name }}</td>
+                    <td>${{ i.spend }}</td>
+                    <td>{{ i.impressions }}</td>
+                    <td>{{ i.clicks }}</td>
+                    <td>{{ i.ctr }}%</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+
+        <a href="/thank-you" class="btn">Continue</a>
+    </div>
+</body>
+</html>
