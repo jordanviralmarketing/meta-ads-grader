@@ -11,7 +11,7 @@ GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return redirect(url_for("connect"), code=302)
 
 @app.route("/connect")
 def connect():
@@ -22,7 +22,7 @@ def connect():
         f"client_id={META_APP_ID}&"
         f"redirect_uri={REDIRECT_URI}&"
         f"state={state}&"
-        f"scope=ads_read,business_management"
+        f"scope=ads_read"
     )
     return redirect(auth_url)
 
@@ -108,6 +108,8 @@ def audit(account_id):
     score = sum(c["score"] for c in categories) // max(len(categories), 1)
     grade = score_to_grade(score)
 
+    total_spend = sum(float(c.get("spend", 0)) for c in insights)
+
     report = {
         "account_id": account_id,
         "grade": grade,
@@ -115,6 +117,7 @@ def audit(account_id):
         "insights": insights,
         "categories": categories,
         "summary": generate_summary(insights, score, categories),
+        "total_spend": total_spend,
     }
 
     session["report"] = report
