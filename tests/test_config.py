@@ -8,8 +8,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _env_without_secret():
+    """Environment with no Meta app secret but a valid Flask session key."""
     env = os.environ.copy()
     env.pop("META_APP_SECRET", None)
+    env["FLASK_SECRET_KEY"] = "unit-test-flask-key"
+    return env
+
+
+def _env_without_flask_key():
+    """Environment with a Meta app secret but no Flask session key."""
+    env = os.environ.copy()
+    env.pop("FLASK_SECRET_KEY", None)
+    env["META_APP_SECRET"] = "unit-test-secret"
     return env
 
 
@@ -135,9 +145,53 @@ class ConfigStartupTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("SMTP_PORT", result.stderr)
 
+    def test_import_fails_without_flask_secret_key(self):
+        for target in ("config", "app"):
+            result = subprocess.run(
+                [sys.executable, "-c", "import %s" % target],
+                cwd=ROOT,
+                env=_env_without_flask_key(),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, target)
+            self.assertIn("FLASK_SECRET_KEY", result.stderr)
+
+    def test_blank_flask_secret_key_is_rejected(self):
+        env = _env_without_flask_key()
+        env["FLASK_SECRET_KEY"] = "   "
+        result = subprocess.run(
+            [sys.executable, "-c", "import config"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FLASK_SECRET_KEY", result.stderr)
+
+    def test_flask_secret_key_comes_from_environment(self):
+        env = _env_without_flask_key()
+        env["FLASK_SECRET_KEY"] = "unit-test-flask-key"
+        code = (
+            "import app\n"
+            "assert app.app.secret_key == 'unit-test-flask-key'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_config_source_does_not_assign_secret_literal(self):
         text = (ROOT / "config.py").read_text()
         self.assertNotRegex(text, r'META_APP_SECRET\s*=\s*["\']')
+        self.assertNotRegex(text, r'FLASK_SECRET_KEY\s*=\s*["\']')
+        app_text = (ROOT / "app.py").read_text()
+        self.assertNotIn("token_hex", app_text)
         self.assertNotRegex(text, r'SMTP_PASSWORD\s*=\s*["\'][^"\']+["\']')
 
 
