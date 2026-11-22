@@ -1,12 +1,10 @@
 from flask import Flask, redirect, request, session, render_template, url_for, jsonify
 import requests
-import os
 import secrets
-from config import META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
+from config import FLASK_SECRET_KEY, META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
 
 app = Flask(__name__)
-# Stable key (set FLASK_SECRET_KEY on Render) so OAuth sessions survive restarts and multiple workers.
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
+app.secret_key = FLASK_SECRET_KEY
 
 GRAPH_API_VERSION = "v21.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
@@ -15,10 +13,11 @@ GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 def index():
     return redirect(url_for("connect"), code=302)
 
-# Ad click IDs / UTMs passed from the VMC thank-you page. /connect redirects straight
-# to Facebook, so no tag runs here; we keep them in the session and re-append them
-# after OAuth so the Meta Pixel and Google tag on this domain can attribute conversions.
-TRACKING_PARAMS = ("gclid", "gbraid", "wbraid", "fbclid",
+# Ad click IDs, the GA4 cross-domain linker (_gl) and UTMs passed from the VMC
+# thank-you page. /connect redirects straight to Facebook, so no tag runs here; we
+# keep them in the session and re-append them after OAuth so the Meta Pixel,
+# Google Ads and GA4 tags on this domain can attribute the visit.
+TRACKING_PARAMS = ("gclid", "gbraid", "wbraid", "fbclid", "_gl",
                    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term")
 
 @app.route("/connect")
