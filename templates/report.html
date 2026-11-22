@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Your Meta Ads Grade: {{ report.grade }}</title>
+    {% include "_tracking.html" %}
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #111; }
@@ -34,7 +35,7 @@
 
             {% if report.total_spend is defined and report.total_spend >= 5000 %}
             <div style="margin-top: 24px;">
-                <a href="https://theviralmarketingcompany.com/meta-ads-services-the-viral-marketing-company?utm_source=grader&utm_medium=result&utm_campaign=free_review#review" class="btn">Request your free review</a>
+                <a id="grader-review-btn" href="https://theviralmarketingcompany.com/meta-ads-services-the-viral-marketing-company?utm_source=grader&utm_medium=result&utm_campaign=free_review#review" class="btn">Request your free review</a>
             </div>
             {% endif %}
         </div>
@@ -69,5 +70,37 @@
         </div>
         {% endif %}
     </div>
+    <script>
+    (function () {
+        var grade = {{ report.grade|tojson }};
+        var score = {{ report.score|tojson }};
+        var qualified = {{ 'true' if (report.total_spend is defined and report.total_spend >= 5000) else 'false' }};
+        var params = { content_name: 'Meta Ads Grader', grade: grade, score: score, qualified: qualified };
+
+        // 3. Grade viewed: once per account per browser session (ignores refreshes).
+        var key = 'grader_grade_view_{{ report.account_id }}';
+        var seen = false;
+        try { seen = sessionStorage.getItem(key) === '1'; sessionStorage.setItem(key, '1'); } catch (e) {}
+        if (!seen) {
+            fbq('trackCustom', 'GraderGradeView', params);
+            gtag('event', 'conversion', { send_to: 'AW-16946961660/PG0ECNaOt70dEPy5-JA_' });
+            gtag('event', 'grader_grade_view', { send_to: 'G-S0JYBC8F8L', grade: grade, score: score, qualified: qualified });
+        }
+
+        // 4. "Request your free review" click ($5k+ accounts only).
+        var btn = document.getElementById('grader-review-btn');
+        if (btn) {
+            btn.addEventListener('click', function (e) {
+                var href = btn.href, done = false;
+                function go() { if (!done) { done = true; window.location.href = href; } }
+                e.preventDefault();
+                fbq('trackCustom', 'GraderReviewRequestClick', params);
+                gtag('event', 'grader_review_request_click', { send_to: 'G-S0JYBC8F8L', grade: grade, score: score });
+                gtag('event', 'conversion', { send_to: 'AW-16946961660/wM9WCNmOt70dEPy5-JA_', event_callback: go });
+                setTimeout(go, 1000);
+            });
+        }
+    })();
+    </script>
 </body>
 </html>
