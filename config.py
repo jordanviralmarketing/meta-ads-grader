@@ -38,6 +38,11 @@ META_APP_ID = _setting("META_APP_ID", "997123502759841")
 # No default. The process fails at import time when this is missing.
 META_APP_SECRET = _require("META_APP_SECRET")
 
+# Signs the Flask session cookie (OAuth state, access token, click IDs).
+# Required so sessions survive restarts and work across gunicorn workers.
+# No default. The process fails at import time when this is missing.
+FLASK_SECRET_KEY = _require("FLASK_SECRET_KEY")
+
 REDIRECT_URI = _setting(
     "REDIRECT_URI",
     "https://meta-ads-grader.onrender.com/auth/meta/callback",

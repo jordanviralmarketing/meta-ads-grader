@@ -1,10 +1,10 @@
 from flask import Flask, redirect, request, session, render_template, url_for, jsonify
 import requests
 import secrets
-from config import META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
+from config import FLASK_SECRET_KEY, META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+app.secret_key = FLASK_SECRET_KEY
 
 GRAPH_API_VERSION = "v21.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
@@ -13,10 +13,18 @@ GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 def index():
     return redirect(url_for("connect"), code=302)
 
+# Ad click IDs, the GA4 cross-domain linker (_gl) and UTMs passed from the VMC
+# thank-you page. /connect redirects straight to Facebook, so no tag runs here; we
+# keep them in the session and re-append them after OAuth so the Meta Pixel,
+# Google Ads and GA4 tags on this domain can attribute the visit.
+TRACKING_PARAMS = ("gclid", "gbraid", "wbraid", "fbclid", "_gl",
+                   "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term")
+
 @app.route("/connect")
 def connect():
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
+    session["tracking_params"] = {k: request.args[k] for k in TRACKING_PARAMS if request.args.get(k)}
     auth_url = (
         f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?"
         f"client_id={META_APP_ID}&"
@@ -64,7 +72,7 @@ def callback():
     accounts = accounts_resp.json().get("data", []) if accounts_resp.status_code == 200 else []
 
     session["ad_accounts"] = accounts
-    return redirect(url_for("select_account"))
+    return redirect(url_for("select_account", **session.get("tracking_params", {})))
 
 @app.route("/select-account")
 def select_account():
