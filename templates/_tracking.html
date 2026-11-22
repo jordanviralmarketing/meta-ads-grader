@@ -19,5 +19,9 @@ window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
 gtag('config', 'AW-16946961660');
-gtag('config', 'G-S0JYBC8F8L');
+// After Facebook OAuth the browser arrives with a facebook.com referrer. Ignore it
+// so GA4 keeps the original source instead of crediting facebook.com.
+var fromFacebookOAuth = false;
+try { fromFacebookOAuth = /(^|\.)facebook\.com$/.test(new URL(document.referrer).hostname); } catch (e) {}
+gtag('config', 'G-S0JYBC8F8L', fromFacebookOAuth ? { ignore_referrer: true } : {});
 </script>
