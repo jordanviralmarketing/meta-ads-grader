@@ -190,9 +190,152 @@ class ConfigStartupTests(unittest.TestCase):
         text = (ROOT / "config.py").read_text()
         self.assertNotRegex(text, r'META_APP_SECRET\s*=\s*["\']')
         self.assertNotRegex(text, r'FLASK_SECRET_KEY\s*=\s*["\']')
+        self.assertNotRegex(text, r'META_CAPI_ACCESS_TOKEN\s*=\s*["\'][^"\']+["\']')
         app_text = (ROOT / "app.py").read_text()
         self.assertNotIn("token_hex", app_text)
+        self.assertIn("scope=ads_read", app_text)
+        self.assertNotIn("business_management", app_text)
         self.assertNotRegex(text, r'SMTP_PASSWORD\s*=\s*["\'][^"\']+["\']')
+        capi_text = (ROOT / "capi.py").read_text()
+        self.assertNotIn("print(", capi_text)
+        self.assertNotRegex(capi_text, r'META_CAPI_ACCESS_TOKEN\s*=\s*["\'][^"\']+["\']')
+
+
+class SessionStoreConfigTests(unittest.TestCase):
+    def test_session_and_report_defaults(self):
+        env = _env_without_secret()
+        env["META_APP_SECRET"] = "unit-test-secret"
+        for name in (
+            "DATA_DIR",
+            "SESSION_TYPE",
+            "SESSION_FILE_DIR",
+            "REPORT_STORE",
+            "REPORT_SQLITE_PATH",
+            "SESSION_COOKIE_SECURE",
+            "RENDER",
+            "DATABASE_URL",
+            "META_CAPI_ACCESS_TOKEN",
+        ):
+            env.pop(name, None)
+        code = (
+            "import os, tempfile, config\n"
+            "assert config.SESSION_TYPE == 'cachelib'\n"
+            "assert config.REPORT_STORE == 'sqlite'\n"
+            "assert config.DATA_DIR == os.path.join(tempfile.gettempdir(), 'meta-ads-grader')\n"
+            "assert config.session_file_dir().endswith('/sessions')\n"
+            "assert config.report_sqlite_path().endswith('reports.sqlite')\n"
+            "assert config.cookie_secure() is False\n"
+            "print('ok')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ok", result.stdout)
+
+    def test_secure_cookies_when_render_is_set(self):
+        env = _env_without_secret()
+        env["META_APP_SECRET"] = "unit-test-secret"
+        env["RENDER"] = "true"
+        env.pop("SESSION_COOKIE_SECURE", None)
+        code = (
+            "import app\n"
+            "client = app.app.test_client()\n"
+            "response = client.get('/connect')\n"
+            "assert response.status_code == 302\n"
+            "cookie = client.get_cookie('session')\n"
+            "assert cookie is not None\n"
+            "assert cookie.secure is True\n"
+            "assert cookie.http_only is True\n"
+            "assert cookie.same_site.lower() == 'lax'\n"
+            "assert app.app.config['SESSION_COOKIE_SECURE'] is True\n"
+            "assert app.app.config['SESSION_COOKIE_HTTPONLY'] is True\n"
+            "print('ok')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ok", result.stdout)
+
+    def test_session_cookie_secure_can_override_render(self):
+        env = _env_without_secret()
+        env["META_APP_SECRET"] = "unit-test-secret"
+        env["RENDER"] = "true"
+        env["SESSION_COOKIE_SECURE"] = "false"
+        code = (
+            "import config\n"
+            "assert config.cookie_secure() is False\n"
+            "print('ok')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_filesystem_session_type_is_an_alias(self):
+        env = _env_without_secret()
+        env["META_APP_SECRET"] = "unit-test-secret"
+        env["SESSION_TYPE"] = "filesystem"
+        code = (
+            "import app\n"
+            "assert app.app.config['SESSION_TYPE'] == 'cachelib'\n"
+            "print('ok')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ok", result.stdout)
+
+    def test_sqlalchemy_session_requires_database_url(self):
+        env = _env_without_secret()
+        env["META_APP_SECRET"] = "unit-test-secret"
+        env["SESSION_TYPE"] = "sqlalchemy"
+        env.pop("DATABASE_URL", None)
+        result = subprocess.run(
+            [sys.executable, "-c", "import app"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DATABASE_URL", result.stderr)
+
+    def test_unknown_session_and_report_backends_fail(self):
+        for var, value, expected in (
+            ("SESSION_TYPE", "redis", "SESSION_TYPE"),
+            ("REPORT_STORE", "postgres", "REPORT_STORE"),
+        ):
+            env = _env_without_secret()
+            env["META_APP_SECRET"] = "unit-test-secret"
+            env[var] = value
+            result = subprocess.run(
+                [sys.executable, "-c", "import app"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, var)
+            self.assertIn(expected, result.stderr)
 
 
 class OAuthRouteTests(unittest.TestCase):
@@ -210,6 +353,8 @@ class OAuthRouteTests(unittest.TestCase):
             "location = response.headers['Location']\n"
             "assert 'client_id=997123502759841' in location\n"
             "assert 'redirect_uri=https://meta-ads-grader.onrender.com/auth/meta/callback' in location\n"
+            "assert 'scope=ads_read' in location\n"
+            "assert 'business_management' not in location\n"
             "assert 'unit-test-secret' not in location\n"
             "assert 'client_secret' not in location\n"
             "print('ok')\n"

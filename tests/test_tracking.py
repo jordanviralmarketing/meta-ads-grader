@@ -16,7 +16,6 @@ GA4_ID = "G-S0JYBC8F8L"
 
 def _report(spend):
     return {
-        "account_id": "act_123",
         "grade": "B",
         "score": 81,
         "insights": [],
@@ -28,7 +27,13 @@ def _report(spend):
 
 def _render_report(spend):
     with grader.app.test_request_context("/"):
-        return render_template("report.html", report=_report(spend), strategy_url="x")
+        return render_template(
+            "report.html",
+            report=_report(spend),
+            strategy_url="x",
+            event_id="evt-test",
+            report_id="opaque-report-id",
+        )
 
 
 class TrackingTagTests(unittest.TestCase):
@@ -40,7 +45,7 @@ class TrackingTagTests(unittest.TestCase):
                     "select_account.html",
                     accounts=[{"id": "act_1", "name": "A", "account_status": 1}],
                 ),
-                "report": render_template("report.html", report=_report(100), strategy_url="x"),
+                "report": _render_report(100),
                 "thank_you": render_template("thank_you.html", strategy_url="x"),
             }
         for name, html in pages.items():
@@ -55,10 +60,27 @@ class TrackingTagTests(unittest.TestCase):
 
     def test_grade_view_event_fires_with_qualified_flag(self):
         html = _render_report(6000)
-        self.assertIn("fbq('trackCustom', 'GraderGradeView', params)", html)
+        self.assertIn("fbq('trackCustom', 'GraderGradeView', params, {eventID: eventId})", html)
+        self.assertIn('var eventId = "evt-test";', html)
+        self.assertEqual(html.count("fbq('init'"), 1)
+        self.assertNotIn("act_", html)
         self.assertIn("AW-16946961660/PG0ECNaOt70dEPy5-JA_", html)
         self.assertIn("var qualified = true;", html)
         self.assertIn("var qualified = false;", _render_report(100))
+
+    def test_audit_cta_tracks_pixel_and_ga4_without_changing_the_link(self):
+        html = _render_report(100)
+        self.assertEqual(html.count("fbq('trackCustom', 'AuditCTAClick'"), 1)
+        self.assertIn("{eventID: newEventId()}", html)
+        self.assertEqual(html.count("newEventId()"), 2)
+        self.assertIn("gtag('event', 'audit_cta_click'", html)
+        self.assertEqual(html.count("Buy an audit today"), 2)
+        self.assertEqual(
+            html.count(
+                "https://audit.theviralmarketingcompany.com/?utm_source=grader&amp;utm_medium=cta&amp;utm_campaign=grade_screen"
+            ),
+            2,
+        )
 
     def test_review_button_only_for_5k_spend(self):
         self.assertIn('id="grader-review-btn"', _render_report(5000))

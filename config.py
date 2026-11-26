@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 
 def _require(name):
@@ -59,6 +60,49 @@ SMTP_PORT = _port("SMTP_PORT", 587)
 SMTP_USER = _setting("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or ""
 FROM_EMAIL = _setting("FROM_EMAIL", "jordan@theviralmarketingcompany.com")
+
+# Local directory for server-side sessions and saved reports.
+# On Render the default lives under the system temp dir, which is writable
+# without a persistent disk and is wiped on restart or redeploy.
+# Set DATA_DIR to a mounted disk path to keep data across deploys.
+DATA_DIR = _setting("DATA_DIR", os.path.join(tempfile.gettempdir(), "meta-ads-grader"))
+
+# Session backend. "cachelib" (default) and "filesystem" store sessions as
+# files under SESSION_FILE_DIR. "sqlalchemy" uses DATABASE_URL when a database
+# is added later. The browser cookie stores only an opaque session id.
+SESSION_TYPE = _setting("SESSION_TYPE", "cachelib").lower()
+
+# Report backend. "sqlite" (default) uses the stdlib and needs no extra service.
+REPORT_STORE = _setting("REPORT_STORE", "sqlite").lower()
+
+
+def session_file_dir():
+    return _setting("SESSION_FILE_DIR", os.path.join(DATA_DIR, "sessions"))
+
+
+def report_sqlite_path():
+    return _setting("REPORT_SQLITE_PATH", os.path.join(DATA_DIR, "reports.sqlite"))
+
+
+def _flag(name):
+    """True/False for a set boolean env var, or None when unset or blank."""
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return None
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def cookie_secure():
+    """Secure session cookies in production.
+
+    Render sets RENDER=true on every service, so production turns this on
+    without a new environment variable. SESSION_COOKIE_SECURE overrides it.
+    Local HTTP (and the test suite) leave it off so the session cookie is sent.
+    """
+    explicit = _flag("SESSION_COOKIE_SECURE")
+    if explicit is not None:
+        return explicit
+    return _flag("RENDER") is True
 
 
 def onrender_host_redirect_enabled():

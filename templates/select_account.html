@@ -14,6 +14,7 @@
         .account strong { font-size: 16px; }
         .meta { color: #64748b; font-size: 14px; margin: 4px 0 12px; }
         .btn { display: inline-block; background: #2563eb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 14px; }
+        button.btn { border: 0; cursor: pointer; font-family: inherit; }
         .btn:hover { background: #1d4ed8; }
     </style>
 </head>
@@ -24,7 +25,10 @@
         <div class="account">
             <strong>{{ account.name or account.id }}</strong>
             <div class="meta">ID: {{ account.id }} · Status: {{ account.account_status }}</div>
-            <a href="/audit/{{ account.id }}" class="btn">Run Audit</a>
+            <form method="post" action="/audit">
+                <input type="hidden" name="account_id" value="{{ account.id }}">
+                <button type="submit" class="btn">Run Audit</button>
+            </form>
         </div>
         {% endfor %}
     </div>

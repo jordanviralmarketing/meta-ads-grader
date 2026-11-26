@@ -9,3 +9,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Local server-side sessions and saved reports (DATA_DIR overrides)
+data/
+flask_session/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
