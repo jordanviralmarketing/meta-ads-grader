@@ -19,6 +19,7 @@ import storage
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+capi.log_startup()
 sessions.init_server_session(app)
 app.report_store = storage.open_report_store()
 

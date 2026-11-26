@@ -26,6 +26,14 @@ def access_token():
     return value.strip()
 
 
+def log_startup():
+    """Log whether the Conversions API token is configured. Never the value."""
+    _log.info(
+        "META_CAPI_ACCESS_TOKEN is set: %s",
+        "yes" if access_token() else "no",
+    )
+
+
 def build_grade_view_event(event_id, event_source_url, user_data, custom_data, event_time=None):
     event = {
         "event_name": "GraderGradeView",
@@ -65,14 +73,35 @@ def _fbtrace_id(response):
     return trace
 
 
+def _events_received(response):
+    """Integer events_received, or None. Ignores every other response field."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    received = payload.get("events_received")
+    if type(received) is int:
+        return received
+    return None
+
+
+def _log_skipped():
+    _log.info("Meta CAPI grade view skipped: META_CAPI_ACCESS_TOKEN is not set")
+
+
 def send_grade_view_event(event):
     """POST one event. Returns False without calling Meta when the token is unset.
 
-    A non-2xx response is a failure. The log line is only the status code and
-    fbtrace_id. The access token and the response body are not logged.
+    A non-2xx response is a failure. The failure log is only the status code and
+    fbtrace_id. A 2xx log is only the status, events_received, and whether a
+    test_event_code was attached. The access token, payload, and response body
+    are not logged.
     """
     token = access_token()
     if not token:
+        _log_skipped()
         return False
     body = {"data": [event]}
     test_code = _test_event_code()
@@ -84,6 +113,13 @@ def send_grade_view_event(event):
     except Exception:
         return False
     if 200 <= response.status_code < 300:
+        received = _events_received(response)
+        _log.info(
+            "Meta CAPI grade view ok status=%s events_received=%s test_event_code=%s",
+            response.status_code,
+            received if received is not None else "missing",
+            "true" if test_code else "false",
+        )
         return True
     _log.warning(
         "Meta CAPI grade view failed status=%s fbtrace_id=%s",
@@ -96,6 +132,7 @@ def send_grade_view_event(event):
 def schedule_grade_view_event(event):
     """Fire the CAPI call on a daemon thread so rendering does not wait on Meta."""
     if not access_token():
+        _log_skipped()
         return False
     threading.Thread(
         target=send_grade_view_event,
