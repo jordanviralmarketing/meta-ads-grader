@@ -191,6 +191,28 @@ class ConversionsApiLogTests(unittest.TestCase):
     def _assert_token_absent(self, text):
         self.assertNotIn(FAKE_TOKEN, text)
 
+    def test_capi_logger_level_is_info_after_app_import(self):
+        import app as grader  # noqa: F401
+
+        self.assertEqual(logging.getLogger("capi").getEffectiveLevel(), logging.INFO)
+
+    def test_request_exception_logs_only_the_exception_type(self):
+        os.environ["META_CAPI_ACCESS_TOKEN"] = FAKE_TOKEN
+        leaked_url = "https://graph.facebook.com/v24.0/1/events?access_token=" + FAKE_TOKEN
+
+        def boom(*args, **kwargs):
+            raise capi.requests.Timeout("timed out " + leaked_url)
+
+        with mock.patch.object(capi.requests, "post", side_effect=boom):
+            with self.assertLogs("capi", level="WARNING") as logs:
+                self.assertFalse(capi.send_grade_view_event({"event_id": "evt-timeout"}))
+        text = "\n".join(logs.output)
+        self.assertIn("error=Timeout", text)
+        self.assertNotIn(FAKE_TOKEN, text)
+        self.assertNotIn("graph.facebook.com", text)
+        self.assertNotIn(leaked_url, text)
+        self.assertNotIn("evt-timeout", text)
+
     def test_startup_log_says_yes_or_no_and_hides_the_token(self):
         os.environ["META_CAPI_ACCESS_TOKEN"] = FAKE_TOKEN
         with self.assertLogs("capi", level="INFO") as logs:

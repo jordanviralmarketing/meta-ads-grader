@@ -110,7 +110,12 @@ def send_grade_view_event(event):
     body["access_token"] = token
     try:
         response = requests.post(_EVENTS_URL, json=body, timeout=4)
-    except Exception:
+    except Exception as exc:
+        # The exception text includes the request URL. Log only the type.
+        _log.warning(
+            "Meta CAPI grade view failed error=%s",
+            type(exc).__name__,
+        )
         return False
     if 200 <= response.status_code < 300:
         received = _events_received(response)
