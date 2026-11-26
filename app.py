@@ -19,6 +19,12 @@ import storage
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+# gunicorn leaves the root logger at WARNING, which would hide capi's INFO lines.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+capi.log_startup()
 sessions.init_server_session(app)
 app.report_store = storage.open_report_store()
 
