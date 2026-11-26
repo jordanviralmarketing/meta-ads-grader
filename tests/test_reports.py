@@ -1,10 +1,12 @@
 import base64
+import hashlib
 import os
 import re
 import tempfile
 import threading
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -220,6 +222,7 @@ class ReportFlowTests(unittest.TestCase):
                     headers={
                         "User-Agent": "GradeTest/1.0",
                         "X-Forwarded-For": "203.0.113.9, 10.0.0.4",
+                        "CF-Connecting-IP": "198.51.100.14",
                     },
                 )
                 self.assertTrue(done.wait(2))
@@ -233,7 +236,12 @@ class ReportFlowTests(unittest.TestCase):
         posted = captured["json"]["data"][0]
         self.assertEqual(posted["event_id"], event_id)
         self.assertEqual(posted["event_name"], "GraderGradeView")
-        self.assertEqual(posted["user_data"]["client_ip_address"], "203.0.113.9")
+        self.assertEqual(posted["user_data"]["client_ip_address"], "198.51.100.14")
+        self.assertEqual(
+            posted["event_source_url"],
+            "https://localhost/report/" + report_id,
+        )
+        self.assertNotIn("http://", posted["event_source_url"])
         self.assertEqual(posted["user_data"]["client_user_agent"], "GradeTest/1.0")
         self.assertEqual(posted["user_data"]["fbp"], "fb.1.1.fbpvalue")
         self.assertTrue(posted["user_data"]["fbc"].endswith(".click-1"), posted["user_data"]["fbc"])
@@ -360,9 +368,92 @@ class ReportFlowTests(unittest.TestCase):
         self.assertNotIn(secret, text)
         self.assertNotIn("act_", text)
         self.assertIn("no longer available", text)
+        self.assertIn(
+            "This report has expired. Re-run your grade in about 60 seconds.",
+            text,
+        )
         self.assertEqual(page.headers.get("X-Robots-Tag"), "noindex, nofollow")
         self.assertIn('<meta name="robots" content="noindex, nofollow">', text)
         self.assertEqual(text.count("fbq('init'"), 1)
+
+    def test_creator_converts_once_and_a_shared_link_does_not(self):
+        self._connect_and_callback()
+        insights = _json_response({"data": []})
+        ads = _json_response({"data": []})
+        with mock.patch.object(grader.requests, "get", side_effect=[insights, ads]):
+            created = self.client.post("/audit", data={"account_id": ACCOUNT_ID})
+        report_id = created.headers["Location"].rsplit("/", 1)[1]
+        with self.client.session_transaction() as sess:
+            self.assertIn(report_id, sess.get("owned_report_ids"))
+
+        os.environ["META_CAPI_ACCESS_TOKEN"] = "unit-test-capi-token"
+        done = threading.Event()
+
+        def capture(url, json=None, timeout=None):
+            done.set()
+            return mock.Mock(status_code=200)
+
+        conversion = "AW-16946961660/PG0ECNaOt70dEPy5-JA_"
+        try:
+            with mock.patch.object(capi.requests, "post", capture):
+                owner = self.client.get("/report/" + report_id)
+                self.assertTrue(done.wait(2))
+            owner_html = owner.get_data(as_text=True)
+            self.assertIn("GraderGradeView", owner_html)
+            self.assertIn(conversion, owner_html)
+
+            stranger = grader.app.test_client()
+            done.clear()
+            with mock.patch.object(capi.requests, "post") as post:
+                shared = stranger.get("/report/" + report_id)
+                time.sleep(0.05)
+                post.assert_not_called()
+            shared_html = shared.get_data(as_text=True)
+            self.assertEqual(shared.status_code, 200)
+            self.assertIn('class="grade"', shared_html)
+            self.assertNotIn("GraderGradeView", shared_html)
+            self.assertNotIn(conversion, shared_html)
+        finally:
+            os.environ.pop("META_CAPI_ACCESS_TOKEN", None)
+
+    def test_account_key_is_an_hmac_not_the_raw_id(self):
+        key = grader._account_key(ACCOUNT_ID)
+        self.assertEqual(key, grader._account_key(ACCOUNT_ID))
+        self.assertNotEqual(key, hashlib.sha256(ACCOUNT_ID.encode("utf-8")).hexdigest())
+        self.assertNotIn("act_", key)
+        self.assertNotIn(ACCOUNT_ID, key)
+
+    def test_session_disk_lifetime_is_about_two_hours(self):
+        self.assertEqual(grader.app.config["PERMANENT_SESSION_LIFETIME"], timedelta(hours=2))
+
+    def test_invalid_oauth_state_shows_start_again(self):
+        response = self.client.get("/auth/meta/callback?code=abc&state=not-the-state")
+        self.assertEqual(response.status_code, 400)
+        body = response.get_data(as_text=True)
+        self.assertIn("Start again", body)
+        self.assertIn('href="/connect"', body)
+        self.assertNotIn("Invalid state or missing code", body)
+
+    def test_create_report_failure_shows_a_retry_page(self):
+        self._connect_and_callback()
+        insights = _json_response({"data": []})
+        ads = _json_response({"data": []})
+        with mock.patch.object(grader.requests, "get", side_effect=[insights, ads]):
+            with mock.patch.object(
+                grader.app.report_store, "save", side_effect=RuntimeError("disk full token")
+            ):
+                response = self.client.post("/audit", data={"account_id": ACCOUNT_ID})
+        self.assertEqual(response.status_code, 503)
+        body = response.get_data(as_text=True)
+        self.assertIn("Start again", body)
+        self.assertIn('href="/connect"', body)
+        self.assertIn("The grade didn", body)
+        self.assertIn("finish.", body)
+        self.assertNotIn("UnboundLocalError", body)
+        self.assertNotIn("disk full", body)
+        self.assertNotIn(ACCESS_TOKEN, body)
+        with self.client.session_transaction() as sess:
+            self.assertNotIn("access_token", sess)
 
     def test_results_are_noindex_and_the_landing_page_is_not(self):
         home = self.client.get("/")

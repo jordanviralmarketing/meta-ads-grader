@@ -7,6 +7,7 @@ without changing callers.
 """
 
 import os
+from datetime import timedelta
 
 from cachelib.file import FileSystemCache
 from flask_session import Session
@@ -40,6 +41,10 @@ def init_server_session(app):
     app.config["SESSION_USE_SIGNER"] = False
     app.config["SESSION_ID_LENGTH"] = 32
     app.config["SESSION_PERMANENT"] = False
+    # Server-side TTL. The cookie itself stays a browser session cookie.
+    # Two hours is long enough to finish OAuth and view the grade, and short
+    # enough that an abandoned access token does not sit on disk for 31 days.
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=2)
     app.config["SESSION_COOKIE_NAME"] = "session"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     # Lax (not Strict) so the Facebook OAuth callback, a top-level cross-site GET,

@@ -19,6 +19,7 @@ The session cookie holds only an opaque id. Session data is stored on disk (Cach
 | `ONRENDER_HOST_REDIRECT` | No | on. `0`, `false`, `no`, or `off` disables the redirect below |
 | `STRATEGY_SESSION_URL` | No | the current strategy-call booking URL |
 | `META_CAPI_ACCESS_TOKEN` | No | unset; the Conversions API call is skipped |
+| `META_CAPI_TEST_EVENT_CODE` | No | unset; sent as `test_event_code` only when set |
 | `DATA_DIR` | No | a directory under the system temp dir |
 | `SESSION_TYPE` | No | `cachelib` (files on disk; `filesystem` is an alias) |
 | `SESSION_FILE_DIR` | No | `$DATA_DIR/sessions` |
@@ -65,13 +66,15 @@ OAuth still requests only `ads_read`. Account listing uses `/me/adaccounts`.
 
 | Event | Where | Meta | Google |
 | --- | --- | --- | --- |
-| Grade viewed | `report.html`, once per ad account per server session | Pixel `GraderGradeView` with `eventID`, plus Conversions API `GraderGradeView` with the same `event_id` | Google Ads "Meta Ads Grader - Grade Viewed" and GA4 `grader_grade_view`, on that same first view |
+| Grade viewed | `report.html`, once per ad account, and only in the session that created the report | Pixel `GraderGradeView` with `eventID`, plus Conversions API `GraderGradeView` with the same `event_id` | Google Ads "Meta Ads Grader - Grade Viewed" and GA4 `grader_grade_view`, on that same first view |
 | Free review click | `report.html`, $5k+ spend only | `GraderReviewRequestClick` | Meta Ads Grader - Free Review Request Click |
 | $247 audit CTA | both "Buy an audit today" buttons | Pixel `AuditCTAClick`, a new `eventID` on each click | GA4 `audit_cta_click` |
 
 The audit CTA still links to `https://audit.theviralmarketingcompany.com/?utm_source=grader&utm_medium=cta&utm_campaign=grade_screen`.
 
-The Conversions API call uses `META_CAPI_ACCESS_TOKEN`. If that variable is missing or blank, the call is skipped. The request is sent in the background so the report page does not wait on Meta. Match fields, when present, are client IP, user agent, `_fbp`, `_fbc` (or an `fbc` built from the stored `fbclid`), and the report URL. An email is sent only when the session has one, as a SHA-256 hash, and `jordan+test` addresses are left out. The ad account id is not included. The audit CTA is pixel-only.
+The Conversions API call uses `META_CAPI_ACCESS_TOKEN`. If that variable is missing or blank, the call is skipped. `META_CAPI_TEST_EVENT_CODE`, when set, is sent as `test_event_code`. The request is sent in the background so the report page does not wait on Meta. A non-2xx response is a failure; the log is only the status code and `fbtrace_id`. Match fields, when present, are client IP (`CF-Connecting-IP` first, otherwise the first `X-Forwarded-For` hop), user agent, `_fbp`, `_fbc` (or an `fbc` built from the stored `fbclid`), and `https://<host><path>`. An email is sent only when the session has one, as a SHA-256 hash, and `jordan+test` addresses are left out. The ad account id is not included. The audit CTA is pixel-only.
+
+Only the browser session that created the report fires the grade view, and only once per account. Opening a shared `/report/<id>` link does not fire the pixel event, the Google Ads conversion, or the Conversions API call. Server-side session files expire after about two hours.
 
 `/connect` stores `gclid`, `gbraid`, `wbraid`, `fbclid`, `_gl` and UTM parameters in the server-side session, and the OAuth callback re-appends them to `/select-account` so attribution survives the Facebook redirect. Form submit and Connect-click events fire from GTM on theviralmarketingcompany.com, not from this app.
 

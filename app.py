@@ -1,5 +1,7 @@
 from flask import Flask, redirect, request, session, render_template, url_for, make_response
 import hashlib
+import hmac
+import logging
 import requests
 import secrets
 import time
@@ -94,8 +96,9 @@ def redirect_onrender_host():
     return redirect(_canonical_url(), code=301)
 
 
-GRAPH_API_VERSION = "v21.0"
+GRAPH_API_VERSION = "v24.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+_log = logging.getLogger(__name__)
 
 @app.route("/")
 def index():
@@ -132,7 +135,7 @@ def callback():
     code = request.args.get("code")
     state = request.args.get("state")
     if not code or state != session.get("oauth_state"):
-        return "Invalid state or missing code", 400
+        return _start_again("The sign-in didn't finish. Connect your account once more."), 400
 
     # Exchange code for access token. Same redirect_uri the dialog used.
     token_url = f"{GRAPH_BASE}/oauth/access_token"
@@ -204,12 +207,24 @@ def _graph_get(path, access_token, params):
 
 
 def _client_ip():
+    cloudflare = (request.headers.get("CF-Connecting-IP") or "").strip()
+    if cloudflare:
+        return cloudflare
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
         first = forwarded.split(",")[0].strip()
         if first:
             return first
     return request.remote_addr
+
+
+def _event_source_url():
+    """Public https URL of this report. Render's WSGI scheme is http."""
+    host = _public_hostname() or "grader.theviralmarketingcompany.com"
+    path = request.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    return "https://%s%s" % (host, path)
 
 
 def _short_cookie(name):
@@ -220,7 +235,11 @@ def _short_cookie(name):
 
 
 def _account_key(account_id):
-    return hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+    """HMAC of the ad account id. The raw id is not recoverable from this."""
+    secret = app.secret_key
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+    return hmac.new(secret, account_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _email_hash_for_capi(email):
@@ -266,7 +285,7 @@ def _schedule_grade_view(report, event_id):
         user_data["em"] = email_hash
     event = capi.build_grade_view_event(
         event_id=event_id,
-        event_source_url=request.url,
+        event_source_url=_event_source_url(),
         user_data=user_data,
         custom_data={
             "content_name": "Meta Ads Grader",
@@ -290,6 +309,10 @@ def _unavailable():
     return make_response(render_template("report_unavailable.html"), 404)
 
 
+def _start_again(message):
+    return make_response(render_template("start_again.html", message=message))
+
+
 @app.route("/report-unavailable")
 def report_unavailable():
     return _unavailable()
@@ -307,6 +330,7 @@ def create_report():
     if account_id not in allowed:
         return "Choose an account from your list.", 400
 
+    report_id = None
     try:
         insights = _graph_get(
             "%s/insights" % account_id,
@@ -343,13 +367,32 @@ def create_report():
             "account_key": _account_key(account_id),
         }
         report_id = app.report_store.save(report)
+        _remember_report(report_id)
+    except Exception as exc:
+        # The exception text can include a Graph URL, which carries the token.
+        _log.warning("Could not save grade report: %s", type(exc).__name__)
+        report_id = None
     finally:
         # Drop the Meta user token as soon as the report attempt finishes.
         # It is not part of the saved report and is not written to the cookie.
         access_token = None
         session.pop("access_token", None)
 
+    if not report_id:
+        return _start_again(
+            "The grade didn't finish. Start again and it should only take about a minute."
+        ), 503
     return redirect(url_for("view_report", report_id=report_id), code=303)
+
+
+def _remember_report(report_id):
+    """Mark this report as one this session created, so only that browser converts."""
+    owned = session.get("owned_report_ids")
+    if not isinstance(owned, list):
+        owned = []
+    if report_id not in owned:
+        owned.append(report_id)
+    session["owned_report_ids"] = owned
 
 
 @app.route("/audit/<path:legacy_id>")
@@ -361,8 +404,15 @@ def legacy_audit(legacy_id):
     return response
 
 
-def _claim_grade_view(report):
-    """Return a new event id the first time this account is viewed in the session."""
+def _owns_report(report_id):
+    owned = session.get("owned_report_ids")
+    return isinstance(owned, list) and report_id in owned
+
+
+def _claim_grade_view(report, report_id):
+    """Event id for the creator's first view of this account. Shared links get none."""
+    if not _owns_report(report_id):
+        return None
     account_key = report.get("account_key") or ""
     if not account_key:
         return None
@@ -383,7 +433,7 @@ def view_report(report_id):
     report = app.report_store.get(report_id)
     if not report:
         return redirect(url_for("report_unavailable"), code=302)
-    event_id = _claim_grade_view(report)
+    event_id = _claim_grade_view(report, report_id)
     return make_response(
         render_template(
             "report.html",
