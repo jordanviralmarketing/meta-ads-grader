@@ -1,10 +1,98 @@
-from flask import Flask, redirect, request, session, render_template, url_for, jsonify
+from flask import Flask, redirect, request, session, render_template, url_for, make_response
+import hashlib
 import requests
 import secrets
-from config import FLASK_SECRET_KEY, META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
+import time
+from config import (
+    FLASK_SECRET_KEY,
+    META_APP_ID,
+    META_APP_SECRET,
+    REDIRECT_URI,
+    STRATEGY_SESSION_URL,
+    onrender_host_redirect_enabled,
+)
+import capi
+import sessions
+import storage
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+sessions.init_server_session(app)
+app.report_store = storage.open_report_store()
+
+# Public Render hostname. Requests here 301 to the custom domain.
+# Any other Host, including the custom domain and localhost, is unchanged.
+ONRENDER_HOST = "meta-ads-grader.onrender.com"
+CANONICAL_ORIGIN = "https://grader.theviralmarketingcompany.com"
+
+# No render.yaml and no health route in this app. Render's default check is a
+# TCP connect to the web port, which never reaches Flask. If the dashboard
+# healthCheckPath is set, add that path here so a probe whose Host is still
+# the onrender.com name gets the route's own status (200) instead of a 301.
+HEALTH_CHECK_PATHS = frozenset()
+
+# Hosts that may complete Meta OAuth on themselves. Compared exactly, after
+# port and trailing-dot are removed. A suffix or X-Forwarded-Host does not match.
+OAUTH_REDIRECT_HOSTS = frozenset({
+    "meta-ads-grader.onrender.com",
+    "grader.theviralmarketingcompany.com",
+})
+OAUTH_CALLBACK_PATH = "/auth/meta/callback"
+
+
+def _public_hostname():
+    """Hostname the client used, from the Host header, without a port.
+
+    Render terminates TLS and forwards plain HTTP. It sets Host to the public
+    name (the onrender.com subdomain or a custom domain). The WSGI scheme is
+    http for every request, and X-Forwarded-Host is not that public name, so
+    neither is used. Redirecting because the scheme is http would loop.
+    """
+    raw = (request.environ.get("HTTP_HOST") or "").strip().lower().rstrip(".")
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[1:end] if end != -1 else raw
+    return raw.split(":", 1)[0]
+
+
+def _canonical_url():
+    """Same path and query on the custom domain, always https."""
+    path = request.script_root + (request.path or "/")
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        path = "/"
+    query = request.query_string.decode("latin-1")
+    if query:
+        return "%s%s?%s" % (CANONICAL_ORIGIN, path, query)
+    return CANONICAL_ORIGIN + path
+
+
+def oauth_redirect_uri():
+    """redirect_uri for this request.
+
+    Allowlisted hosts always use https and /auth/meta/callback on that host,
+    so the session cookie set at /connect is present when Facebook returns.
+    Every other host uses REDIRECT_URI. Host comes from the Host header only.
+    """
+    host = _public_hostname()
+    if host in OAUTH_REDIRECT_HOSTS:
+        return "https://%s%s" % (host, OAUTH_CALLBACK_PATH)
+    return REDIRECT_URI
+
+
+@app.before_request
+def redirect_onrender_host():
+    if not onrender_host_redirect_enabled():
+        return None
+    # In-flight logins started on onrender must finish there. The state cookie
+    # is host-only, and this path is not sent on to the custom domain.
+    if request.path == OAUTH_CALLBACK_PATH or request.path in HEALTH_CHECK_PATHS:
+        return None
+    if _public_hostname() != ONRENDER_HOST:
+        return None
+    return redirect(_canonical_url(), code=301)
+
 
 GRAPH_API_VERSION = "v21.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
@@ -25,10 +113,11 @@ def connect():
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
     session["tracking_params"] = {k: request.args[k] for k in TRACKING_PARAMS if request.args.get(k)}
+    redirect_uri = oauth_redirect_uri()
     auth_url = (
         f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?"
         f"client_id={META_APP_ID}&"
-        f"redirect_uri={REDIRECT_URI}&"
+        f"redirect_uri={redirect_uri}&"
         f"state={state}&"
         f"scope=ads_read"
     )
@@ -45,15 +134,16 @@ def callback():
     if not code or state != session.get("oauth_state"):
         return "Invalid state or missing code", 400
 
-    # Exchange code for access token
+    # Exchange code for access token. Same redirect_uri the dialog used.
     token_url = f"{GRAPH_BASE}/oauth/access_token"
+    redirect_uri = oauth_redirect_uri()
     params = {
         "client_id": META_APP_ID,
         "client_secret": META_APP_SECRET,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code": code,
     }
-    token_resp = requests.get(token_url, params=params)
+    token_resp = requests.get(token_url, params=params, timeout=20)
     if token_resp.status_code != 200:
         return f"Token exchange failed: {token_resp.text}", 400
 
@@ -62,12 +152,16 @@ def callback():
     if not access_token:
         return "No access token received", 400
 
+    # Server-side only. The session cookie is an opaque id; this value is removed
+    # once the report is saved.
     session["access_token"] = access_token
+    session.pop("oauth_state", None)
 
     # Fetch ad accounts
     accounts_resp = requests.get(
         f"{GRAPH_BASE}/me/adaccounts",
-        params={"access_token": access_token, "fields": "id,name,account_status"}
+        params={"access_token": access_token, "fields": "id,name,account_status"},
+        timeout=20,
     )
     accounts = accounts_resp.json().get("data", []) if accounts_resp.status_code == 200 else []
 
@@ -81,55 +175,224 @@ def select_account():
         return "No ad accounts found or access denied.", 400
     return render_template("select_account.html", accounts=accounts)
 
-@app.route("/audit/<account_id>")
-def audit(account_id):
+def _strip_account_ids(rows):
+    cleaned = []
+    for row in rows:
+        if isinstance(row, dict):
+            cleaned.append({key: value for key, value in row.items() if key != "account_id"})
+        else:
+            cleaned.append(row)
+    return cleaned
+
+
+def _graph_get(path, access_token, params):
+    """GET Graph data. Failures become an empty list and are not logged (the
+    access token is in the query string, and exception text includes the URL)."""
+    query = dict(params)
+    query["access_token"] = access_token
+    try:
+        response = requests.get(f"{GRAPH_BASE}/{path}", params=query, timeout=20)
+    except requests.RequestException:
+        return []
+    if response.status_code != 200:
+        return []
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    return _strip_account_ids(payload.get("data", []))
+
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.remote_addr
+
+
+def _short_cookie(name):
+    value = request.cookies.get(name) or ""
+    if value and len(value) <= 512:
+        return value
+    return None
+
+
+def _account_key(account_id):
+    return hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+
+
+def _email_hash_for_capi(email):
+    """SHA-256 of a normalized email, or None when there is nothing to send.
+
+    jordan+test addresses are skipped. The raw address is never returned.
+    """
+    if not isinstance(email, str):
+        return None
+    normalized = email.strip().lower()
+    if not normalized or "@" not in normalized:
+        return None
+    if "jordan+test" in normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _fbc_from_click_id():
+    tracking = session.get("tracking_params") or {}
+    fbclid = tracking.get("fbclid") if isinstance(tracking, dict) else None
+    if not fbclid or len(fbclid) > 512:
+        return None
+    return "fb.1.%d.%s" % (int(time.time() * 1000), fbclid)
+
+
+def _schedule_grade_view(report, event_id):
+    qualified = bool((report.get("total_spend") or 0) >= 5000)
+    user_data = {}
+    ip = _client_ip()
+    if ip:
+        user_data["client_ip_address"] = ip
+    user_agent = request.headers.get("User-Agent")
+    if user_agent:
+        user_data["client_user_agent"] = user_agent
+    fbp = _short_cookie("_fbp")
+    if fbp:
+        user_data["fbp"] = fbp
+    fbc = _short_cookie("_fbc") or _fbc_from_click_id()
+    if fbc:
+        user_data["fbc"] = fbc
+    email_hash = _email_hash_for_capi(session.get("email") or "")
+    if email_hash:
+        user_data["em"] = email_hash
+    event = capi.build_grade_view_event(
+        event_id=event_id,
+        event_source_url=request.url,
+        user_data=user_data,
+        custom_data={
+            "content_name": "Meta Ads Grader",
+            "grade": report.get("grade"),
+            "score": report.get("score"),
+            "qualified": qualified,
+        },
+    )
+    capi.schedule_grade_view_event(event)
+
+
+@app.after_request
+def _noindex_private_reports(response):
+    path = request.path or ""
+    if path == "/audit" or path.startswith("/audit/") or path.startswith("/report"):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
+def _unavailable():
+    return make_response(render_template("report_unavailable.html"), 404)
+
+
+@app.route("/report-unavailable")
+def report_unavailable():
+    return _unavailable()
+
+
+@app.route("/audit", methods=["POST"])
+def create_report():
     access_token = session.get("access_token")
     if not access_token:
         return redirect(url_for("index"))
 
-    # Fetch campaign insights (last 30 days)
-    insights_url = f"{GRAPH_BASE}/{account_id}/insights"
-    params = {
-        "access_token": access_token,
-        "date_preset": "last_30d",
-        "level": "campaign",
-        "fields": "campaign_name,spend,impressions,clicks,ctr,cpc,cpm,actions,reach,frequency",
-        "limit": 100,
-    }
-    insights_resp = requests.get(insights_url, params=params)
-    insights = insights_resp.json().get("data", []) if insights_resp.status_code == 200 else []
+    account_id = (request.form.get("account_id") or "").strip()
+    accounts = session.get("ad_accounts") or []
+    allowed = {account.get("id") for account in accounts if isinstance(account, dict)}
+    if account_id not in allowed:
+        return "Choose an account from your list.", 400
 
-    # Fetch ad-level insights for creative volume / concentration checks
-    ad_insights_url = f"{GRAPH_BASE}/{account_id}/insights"
-    ad_params = {
-        "access_token": access_token,
-        "date_preset": "last_30d",
-        "level": "ad",
-        "fields": "ad_name,spend,impressions,clicks,ctr",
-        "limit": 200,
-    }
-    ad_resp = requests.get(ad_insights_url, params=ad_params)
-    ad_insights = ad_resp.json().get("data", []) if ad_resp.status_code == 200 else []
+    try:
+        insights = _graph_get(
+            "%s/insights" % account_id,
+            access_token,
+            {
+                "date_preset": "last_30d",
+                "level": "campaign",
+                "fields": "campaign_name,spend,impressions,clicks,ctr,cpc,cpm,actions,reach,frequency",
+                "limit": 100,
+            },
+        )
+        ad_insights = _graph_get(
+            "%s/insights" % account_id,
+            access_token,
+            {
+                "date_preset": "last_30d",
+                "level": "ad",
+                "fields": "ad_name,spend,impressions,clicks,ctr",
+                "limit": 200,
+            },
+        )
+        categories = score_categories(insights, ad_insights)
+        score = sum(c["score"] for c in categories) // max(len(categories), 1)
+        grade = score_to_grade(score)
+        total_spend = sum(float(c.get("spend", 0) or 0) for c in insights)
+        report = {
+            "grade": grade,
+            "score": score,
+            "insights": insights,
+            "categories": categories,
+            "summary": generate_summary(insights, score, categories),
+            "total_spend": total_spend,
+            # Not the ad account id. Used to fire GraderGradeView once per account.
+            "account_key": _account_key(account_id),
+        }
+        report_id = app.report_store.save(report)
+    finally:
+        # Drop the Meta user token as soon as the report attempt finishes.
+        # It is not part of the saved report and is not written to the cookie.
+        access_token = None
+        session.pop("access_token", None)
 
-    # Score the first 4 categories
-    categories = score_categories(insights, ad_insights)
-    score = sum(c["score"] for c in categories) // max(len(categories), 1)
-    grade = score_to_grade(score)
+    return redirect(url_for("view_report", report_id=report_id), code=303)
 
-    total_spend = sum(float(c.get("spend", 0)) for c in insights)
 
-    report = {
-        "account_id": account_id,
-        "grade": grade,
-        "score": score,
-        "insights": insights,
-        "categories": categories,
-        "summary": generate_summary(insights, score, categories),
-        "total_spend": total_spend,
-    }
+@app.route("/audit/<path:legacy_id>")
+def legacy_audit(legacy_id):
+    # Old links put the ad account id in the path. Redirect before any pixel
+    # runs, and do not send that URL onward as the next page's referrer.
+    response = redirect(url_for("report_unavailable"), code=302)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
-    session["report"] = report
-    return render_template("report.html", report=report, strategy_url=STRATEGY_SESSION_URL)
+
+def _claim_grade_view(report):
+    """Return a new event id the first time this account is viewed in the session."""
+    account_key = report.get("account_key") or ""
+    if not account_key:
+        return None
+    seen = session.get("grade_view_ids")
+    if not isinstance(seen, dict):
+        seen = {}
+    if account_key in seen:
+        return None
+    event_id = storage.new_opaque_id(16)
+    seen[account_key] = event_id
+    session["grade_view_ids"] = seen
+    _schedule_grade_view(report, event_id)
+    return event_id
+
+
+@app.route("/report/<report_id>")
+def view_report(report_id):
+    report = app.report_store.get(report_id)
+    if not report:
+        return redirect(url_for("report_unavailable"), code=302)
+    event_id = _claim_grade_view(report)
+    return make_response(
+        render_template(
+            "report.html",
+            report=report,
+            strategy_url=STRATEGY_SESSION_URL,
+            event_id=event_id,
+            report_id=report_id,
+        )
+    )
 
 def score_categories(campaign_insights, ad_insights):
     """Score the first 4 categories based on blog principles."""
