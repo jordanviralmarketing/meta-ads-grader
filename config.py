@@ -59,3 +59,15 @@ SMTP_PORT = _port("SMTP_PORT", 587)
 SMTP_USER = _setting("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or ""
 FROM_EMAIL = _setting("FROM_EMAIL", "jordan@theviralmarketingcompany.com")
+
+
+def onrender_host_redirect_enabled():
+    """301 from meta-ads-grader.onrender.com to the custom domain.
+
+    On unless ONRENDER_HOST_REDIRECT is 0, false, no, or off. Unset or blank
+    stays on. Read per request so the flag matches the process environment.
+    """
+    value = os.environ.get("ONRENDER_HOST_REDIRECT")
+    if value is None or value.strip() == "":
+        return True
+    return value.strip().lower() not in ("0", "false", "no", "off")

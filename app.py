@@ -1,10 +1,68 @@
 from flask import Flask, redirect, request, session, render_template, url_for, jsonify
 import requests
 import secrets
-from config import FLASK_SECRET_KEY, META_APP_ID, META_APP_SECRET, REDIRECT_URI, STRATEGY_SESSION_URL
+from config import (
+    FLASK_SECRET_KEY,
+    META_APP_ID,
+    META_APP_SECRET,
+    REDIRECT_URI,
+    STRATEGY_SESSION_URL,
+    onrender_host_redirect_enabled,
+)
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+
+# Public Render hostname. Requests here 301 to the custom domain.
+# Any other Host, including the custom domain and localhost, is unchanged.
+ONRENDER_HOST = "meta-ads-grader.onrender.com"
+CANONICAL_ORIGIN = "https://grader.theviralmarketingcompany.com"
+
+# No render.yaml and no health route in this app. Render's default check is a
+# TCP connect to the web port, which never reaches Flask. If the dashboard
+# healthCheckPath is set, add that path here so a probe whose Host is still
+# the onrender.com name gets the route's own status (200) instead of a 301.
+HEALTH_CHECK_PATHS = frozenset()
+
+
+def _public_hostname():
+    """Hostname the client used, from the Host header, without a port.
+
+    Render terminates TLS and forwards plain HTTP. It sets Host to the public
+    name (the onrender.com subdomain or a custom domain). The WSGI scheme is
+    http for every request, and X-Forwarded-Host is not that public name, so
+    neither is used. Redirecting because the scheme is http would loop.
+    """
+    raw = (request.environ.get("HTTP_HOST") or "").strip().lower().rstrip(".")
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[1:end] if end != -1 else raw
+    return raw.split(":", 1)[0]
+
+
+def _canonical_url():
+    """Same path and query on the custom domain, always https."""
+    path = request.script_root + (request.path or "/")
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        path = "/"
+    query = request.query_string.decode("latin-1")
+    if query:
+        return "%s%s?%s" % (CANONICAL_ORIGIN, path, query)
+    return CANONICAL_ORIGIN + path
+
+
+@app.before_request
+def redirect_onrender_host():
+    if not onrender_host_redirect_enabled():
+        return None
+    if request.path in HEALTH_CHECK_PATHS:
+        return None
+    if _public_hostname() != ONRENDER_HOST:
+        return None
+    return redirect(_canonical_url(), code=301)
+
 
 GRAPH_API_VERSION = "v21.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
