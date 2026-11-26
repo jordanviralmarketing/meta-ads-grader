@@ -130,7 +130,8 @@ def connect():
 def callback():
     error = request.args.get("error")
     if error:
-        return f"Authorization failed: {error}", 400
+        # Do not echo error or error_description. Both are attacker-controlled.
+        return _start_again("The sign-in didn't finish. Connect your account once more."), 400
 
     code = request.args.get("code")
     state = request.args.get("state")
@@ -148,7 +149,8 @@ def callback():
     }
     token_resp = requests.get(token_url, params=params, timeout=20)
     if token_resp.status_code != 200:
-        return f"Token exchange failed: {token_resp.text}", 400
+        _log_oauth_exchange_failure(token_resp)
+        return _start_again("The sign-in didn't finish. Connect your account once more."), 400
 
     token_data = token_resp.json()
     access_token = token_data.get("access_token")
@@ -219,12 +221,49 @@ def _client_ip():
 
 
 def _event_source_url():
-    """Public https URL of this report. Render's WSGI scheme is http."""
-    host = _public_hostname() or "grader.theviralmarketingcompany.com"
+    """Public https URL of this report.
+
+    Only the two OAuth hosts are trusted. Anything else, including a spoofed
+    Host or X-Forwarded-Host, uses the custom domain. Render's WSGI scheme is http.
+    """
+    host = _public_hostname()
+    if host not in OAUTH_REDIRECT_HOSTS:
+        host = "grader.theviralmarketingcompany.com"
     path = request.path or "/"
-    if not path.startswith("/"):
-        path = "/" + path
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        path = "/"
     return "https://%s%s" % (host, path)
+
+
+def _log_oauth_exchange_failure(response):
+    """Log a token-exchange failure without the body, code, or secrets."""
+    kind = ""
+    trace = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            candidate = err.get("type") or ""
+            fbtrace = err.get("fbtrace_id") or ""
+        elif isinstance(err, str):
+            candidate = err
+            fbtrace = payload.get("fbtrace_id") or ""
+        else:
+            candidate = ""
+            fbtrace = ""
+        if isinstance(candidate, str) and candidate.isalnum() and len(candidate) <= 64:
+            kind = candidate
+        if isinstance(fbtrace, str) and fbtrace.isalnum() and len(fbtrace) <= 64:
+            trace = fbtrace
+    _log.warning(
+        "Meta token exchange failed status=%s error=%s fbtrace_id=%s",
+        response.status_code,
+        kind,
+        trace,
+    )
 
 
 def _short_cookie(name):

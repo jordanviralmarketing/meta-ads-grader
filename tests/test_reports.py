@@ -239,7 +239,7 @@ class ReportFlowTests(unittest.TestCase):
         self.assertEqual(posted["user_data"]["client_ip_address"], "198.51.100.14")
         self.assertEqual(
             posted["event_source_url"],
-            "https://localhost/report/" + report_id,
+            "https://grader.theviralmarketingcompany.com/report/" + report_id,
         )
         self.assertNotIn("http://", posted["event_source_url"])
         self.assertEqual(posted["user_data"]["client_user_agent"], "GradeTest/1.0")
@@ -425,6 +425,85 @@ class ReportFlowTests(unittest.TestCase):
 
     def test_session_disk_lifetime_is_about_two_hours(self):
         self.assertEqual(grader.app.config["PERMANENT_SESSION_LIFETIME"], timedelta(hours=2))
+
+    def test_oauth_error_query_is_not_reflected(self):
+        payload = "<script>alert(1)</script>"
+        response = self.client.get("/auth/meta/callback", query_string={"error": payload})
+        self.assertEqual(response.status_code, 400)
+        body = response.get_data(as_text=True)
+        self.assertIn("<h1>Start again</h1>", body)
+        self.assertIn('href="/connect"', body)
+        self.assertNotIn("<script>alert", body)
+        self.assertNotIn("alert(1)", body)
+        self.assertNotIn("Authorization failed", body)
+
+    def test_token_exchange_failure_shows_start_again_and_does_not_log_secrets(self):
+        self.client.get("/connect")
+        with self.client.session_transaction() as sess:
+            state = sess["oauth_state"]
+        failed = mock.Mock(status_code=400)
+        failed.text = "code=super-secret-code <script>alert(1)</script> client_secret=nope"
+        failed.json.return_value = {
+            "error": {
+                "message": "code=super-secret-code <script>alert(1)</script>",
+                "type": "OAuthException",
+                "fbtrace_id": "Trace9",
+            }
+        }
+        with mock.patch.object(grader.requests, "get", return_value=failed):
+            with self.assertLogs("app", level="WARNING") as logs:
+                response = self.client.get(
+                    "/auth/meta/callback?code=super-secret-code&state=%s" % state
+                )
+        self.assertEqual(response.status_code, 400)
+        body = response.get_data(as_text=True)
+        self.assertIn("<h1>Start again</h1>", body)
+        self.assertIn('href="/connect"', body)
+        self.assertNotIn("alert(1)", body)
+        self.assertNotIn("super-secret-code", body)
+        self.assertNotIn("Token exchange failed", body)
+        text = "\n".join(logs.output)
+        self.assertIn("status=400", text)
+        self.assertIn("error=OAuthException", text)
+        self.assertIn("fbtrace_id=Trace9", text)
+        self.assertNotIn("super-secret-code", text)
+        self.assertNotIn("<script>", text)
+        self.assertNotIn("client_secret", text)
+
+    def test_spoofed_host_does_not_set_event_source_url(self):
+        spoofed = (
+            "http://evil.example",
+            "http://meta-ads-grader.onrender.com.evil.example",
+            "http://localhost",
+        )
+        for base in spoofed:
+            with grader.app.test_request_context(
+                "/report/abc",
+                base_url=base,
+                headers={"X-Forwarded-Host": "grader.theviralmarketingcompany.com"},
+            ):
+                self.assertEqual(
+                    grader._event_source_url(),
+                    "https://grader.theviralmarketingcompany.com/report/abc",
+                    base,
+                )
+        with grader.app.test_request_context(
+            "/report/abc",
+            base_url="https://grader.theviralmarketingcompany.com",
+            headers={"X-Forwarded-Host": "evil.example"},
+        ):
+            self.assertEqual(
+                grader._event_source_url(),
+                "https://grader.theviralmarketingcompany.com/report/abc",
+            )
+        with grader.app.test_request_context(
+            "/report/abc",
+            base_url="https://meta-ads-grader.onrender.com",
+        ):
+            self.assertEqual(
+                grader._event_source_url(),
+                "https://meta-ads-grader.onrender.com/report/abc",
+            )
 
     def test_invalid_oauth_state_shows_start_again(self):
         response = self.client.get("/auth/meta/callback?code=abc&state=not-the-state")
