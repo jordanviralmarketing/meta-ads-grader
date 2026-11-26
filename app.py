@@ -30,7 +30,7 @@ def connect():
         f"client_id={META_APP_ID}&"
         f"redirect_uri={REDIRECT_URI}&"
         f"state={state}&"
-        f"scope=ads_read,business_management"
+        f"scope=ads_read"
     )
     return redirect(auth_url)
 
