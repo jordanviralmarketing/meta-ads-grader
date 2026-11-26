@@ -24,7 +24,9 @@ Configuration comes from the process environment. Copy `.env.example` if you wan
 
 SMTP settings are reserved for later email delivery. No current route reads them.
 
-Requests whose `Host` is `meta-ads-grader.onrender.com` receive a 301 to `https://grader.theviralmarketingcompany.com` with the same path and query string. Other hosts, including the custom domain and localhost, are unchanged. Render terminates TLS, so the redirect looks at the `Host` header only (not the internal `http` scheme, and not `X-Forwarded-Host`). Set `ONRENDER_HOST_REDIRECT=0` and restart to turn it off. This repo has no `render.yaml` and no health-check route; Render's default probe is TCP and does not hit the app.
+Requests whose `Host` is `meta-ads-grader.onrender.com` receive a 301 to `https://grader.theviralmarketingcompany.com` with the same path and query string. `/auth/meta/callback` is exempt, so a login that started on that host finishes there. Other hosts, including the custom domain and localhost, are unchanged. Render terminates TLS, so the redirect looks at the `Host` header only (not the internal `http` scheme, and not `X-Forwarded-Host`). Set `ONRENDER_HOST_REDIRECT=0` and restart to turn it off. This repo has no `render.yaml` and no health-check route; Render's default probe is TCP and does not hit the app.
+
+The Meta dialog and the code exchange share one `redirect_uri`. On `meta-ads-grader.onrender.com` or `grader.theviralmarketingcompany.com` it is `https://` that host plus `/auth/meta/callback`. The host must match exactly. Any other host, including a suffix spoof or `X-Forwarded-Host`, uses `REDIRECT_URI`.
 
 ## Run locally
 

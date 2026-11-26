@@ -35,16 +35,25 @@ class OnrenderHostRedirectTests(unittest.TestCase):
         self.assertEqual(bare.headers["Location"], CANONICAL + "/some/path")
         self.assertNotIn("?", bare.headers["Location"])
 
-    def test_oauth_callback_on_onrender_host_redirects_with_query(self):
+    def test_callback_on_onrender_is_not_redirected(self):
         response = self.client.get(
             "/auth/meta/callback?code=abc&state=xyz",
             base_url=ONRENDER,
         )
-        self.assertEqual(response.status_code, 301)
-        self.assertEqual(
-            response.headers["Location"],
-            CANONICAL + "/auth/meta/callback?code=abc&state=xyz",
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("Location", response.headers)
+
+    def test_other_onrender_paths_still_redirect_with_query(self):
+        cases = (
+            ("/some/path?x=1", "/some/path?x=1"),
+            ("/connect?x=1", "/connect?x=1"),
+            ("/auth/meta/callback/extra?x=1", "/auth/meta/callback/extra?x=1"),
+            ("/auth/meta?x=1", "/auth/meta?x=1"),
         )
+        for path, expected in cases:
+            response = self.client.get(path, base_url=ONRENDER)
+            self.assertEqual(response.status_code, 301, path)
+            self.assertEqual(response.headers["Location"], CANONICAL + expected, path)
 
     def test_root_on_onrender_host_keeps_the_root_path(self):
         response = self.client.get("/", base_url=ONRENDER)

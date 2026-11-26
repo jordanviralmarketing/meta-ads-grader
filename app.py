@@ -24,6 +24,14 @@ CANONICAL_ORIGIN = "https://grader.theviralmarketingcompany.com"
 # the onrender.com name gets the route's own status (200) instead of a 301.
 HEALTH_CHECK_PATHS = frozenset()
 
+# Hosts that may complete Meta OAuth on themselves. Compared exactly, after
+# port and trailing-dot are removed. A suffix or X-Forwarded-Host does not match.
+OAUTH_REDIRECT_HOSTS = frozenset({
+    "meta-ads-grader.onrender.com",
+    "grader.theviralmarketingcompany.com",
+})
+OAUTH_CALLBACK_PATH = "/auth/meta/callback"
+
 
 def _public_hostname():
     """Hostname the client used, from the Host header, without a port.
@@ -53,11 +61,26 @@ def _canonical_url():
     return CANONICAL_ORIGIN + path
 
 
+def oauth_redirect_uri():
+    """redirect_uri for this request.
+
+    Allowlisted hosts always use https and /auth/meta/callback on that host,
+    so the session cookie set at /connect is present when Facebook returns.
+    Every other host uses REDIRECT_URI. Host comes from the Host header only.
+    """
+    host = _public_hostname()
+    if host in OAUTH_REDIRECT_HOSTS:
+        return "https://%s%s" % (host, OAUTH_CALLBACK_PATH)
+    return REDIRECT_URI
+
+
 @app.before_request
 def redirect_onrender_host():
     if not onrender_host_redirect_enabled():
         return None
-    if request.path in HEALTH_CHECK_PATHS:
+    # In-flight logins started on onrender must finish there. The state cookie
+    # is host-only, and this path is not sent on to the custom domain.
+    if request.path == OAUTH_CALLBACK_PATH or request.path in HEALTH_CHECK_PATHS:
         return None
     if _public_hostname() != ONRENDER_HOST:
         return None
@@ -83,10 +106,11 @@ def connect():
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
     session["tracking_params"] = {k: request.args[k] for k in TRACKING_PARAMS if request.args.get(k)}
+    redirect_uri = oauth_redirect_uri()
     auth_url = (
         f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?"
         f"client_id={META_APP_ID}&"
-        f"redirect_uri={REDIRECT_URI}&"
+        f"redirect_uri={redirect_uri}&"
         f"state={state}&"
         f"scope=ads_read"
     )
@@ -103,12 +127,13 @@ def callback():
     if not code or state != session.get("oauth_state"):
         return "Invalid state or missing code", 400
 
-    # Exchange code for access token
+    # Exchange code for access token. Same redirect_uri the dialog used.
     token_url = f"{GRAPH_BASE}/oauth/access_token"
+    redirect_uri = oauth_redirect_uri()
     params = {
         "client_id": META_APP_ID,
         "client_secret": META_APP_SECRET,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code": code,
     }
     token_resp = requests.get(token_url, params=params)
