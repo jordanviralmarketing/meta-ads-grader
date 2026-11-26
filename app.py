@@ -2,9 +2,11 @@ from flask import Flask, redirect, request, session, render_template, url_for, m
 import hashlib
 import hmac
 import logging
+import re
 import requests
 import secrets
 import time
+from urllib.parse import urlencode
 from config import (
     FLASK_SECRET_KEY,
     META_APP_ID,
@@ -24,6 +26,35 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+
+class _DropQueryStringFilter(logging.Filter):
+    """Strip ?query from log lines so access logs cannot record an email."""
+
+    _query = re.compile(r"\?[^\s\"']*")
+
+    def filter(self, record):
+        record.msg = self._scrub(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._scrub(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: self._scrub(value) for key, value in record.args.items()}
+        else:
+            record.args = self._scrub(record.args)
+        return True
+
+    def _scrub(self, value):
+        if isinstance(value, str):
+            return self._query.sub("", value)
+        return value
+
+
+_query_filter = _DropQueryStringFilter()
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_query_filter)
+for _logger_name in ("werkzeug", "werkzeug.serving", "gunicorn.access", "gunicorn.error"):
+    logging.getLogger(_logger_name).addFilter(_query_filter)
+
 capi.log_startup()
 sessions.init_server_session(app)
 app.report_store = storage.open_report_store()
@@ -95,7 +126,13 @@ def redirect_onrender_host():
         return None
     # In-flight logins started on onrender must finish there. The state cookie
     # is host-only, and this path is not sent on to the custom domain.
-    if request.path == OAUTH_CALLBACK_PATH or request.path in HEALTH_CHECK_PATHS:
+    # /start is also exempt: its only redirect is the thanks page, which must
+    # not carry the email. A host 301 would put ?email= in Location.
+    if (
+        request.path == OAUTH_CALLBACK_PATH
+        or request.path == "/start"
+        or request.path in HEALTH_CHECK_PATHS
+    ):
         return None
     if _public_hostname() != ONRENDER_HOST:
         return None
@@ -116,6 +153,45 @@ def index():
 # Google Ads and GA4 tags on this domain can attribute the visit.
 TRACKING_PARAMS = ("gclid", "gbraid", "wbraid", "fbclid", "_gl",
                    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term")
+
+THANKS_URL = "https://theviralmarketingcompany.com/meta-ads-grader-thanks"
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _normalize_email(raw):
+    """Lowercased email, or None when the shape is wrong or it is too long."""
+    if not isinstance(raw, str):
+        return None
+    email = raw.strip().lower()
+    if not email or len(email) > 254 or not _EMAIL_RE.fullmatch(email):
+        return None
+    return email
+
+
+@app.route("/start")
+def start():
+    """Store a GHL form email, then leave for the thanks page without it.
+
+    The response is an empty 302. No template and no tracking tags. The email
+    stays in the server-side session and is not logged or copied into Location.
+    """
+    email = _normalize_email(request.args.get("email"))
+    if email:
+        session["email"] = email
+    forwarded = [
+        (key, value)
+        for key, value in request.args.items(multi=True)
+        if value and (key == "fbclid" or key.startswith("utm_"))
+    ]
+    location = THANKS_URL
+    if forwarded:
+        location = "%s?%s" % (THANKS_URL, urlencode(forwarded))
+    response = make_response("", 302)
+    response.headers["Location"] = location
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 @app.route("/connect")
 def connect():
