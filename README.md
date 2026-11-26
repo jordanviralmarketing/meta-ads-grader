@@ -31,6 +31,7 @@ The session cookie holds only an opaque id. Session data is stored on disk (Cach
 | `SMTP_USER` | No | empty |
 | `SMTP_PASSWORD` | No | empty (no password is stored in the repo) |
 | `FROM_EMAIL` | No | `jordan@theviralmarketingcompany.com` |
+| `ONRENDER_HOST_REDIRECT` | No | on. `0`, `false`, `no`, or `off` disables the redirect below |
 
 SMTP settings are reserved for later email delivery. No current route reads them.
 
