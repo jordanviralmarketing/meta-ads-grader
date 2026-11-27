@@ -29,23 +29,45 @@ logging.basicConfig(
 
 
 class _DropQueryStringFilter(logging.Filter):
-    """Strip ?query from log lines so access logs cannot record an email."""
+    """Keep emails out of access logs, including gunicorn's atom dict.
+
+    Gunicorn logs with a SafeAtoms dict, not a tuple. That dict must be
+    updated in place: replacing it drops the missing-key behavior, and a
+    header atom such as %({x-forwarded-for}i)s then raises KeyError. The
+    logging error dump prints the whole atom dict, query and session cookie
+    included. q and {query_string}e have no leading "?", and {raw_uri}e
+    carries the path plus the query, so those atoms are blanked by name.
+    Request-line atoms that still contain "?..." are stripped as before.
+    """
 
     _query = re.compile(r"\?[^\s\"']*")
+    _query_bytes = re.compile(br"\?[^\s\"']*")
+    _blank_atoms = frozenset({"q", "{query_string}e", "{raw_uri}e"})
 
     def filter(self, record):
-        record.msg = self._scrub(record.msg)
-        if isinstance(record.args, tuple):
-            record.args = tuple(self._scrub(arg) for arg in record.args)
-        elif isinstance(record.args, dict):
-            record.args = {key: self._scrub(value) for key, value in record.args.items()}
+        record.msg = self._scrub_text(record.msg)
+        args = record.args
+        if isinstance(args, dict):
+            for key in list(args.keys()):
+                args[key] = self._scrub_atom(key, args[key])
+        elif isinstance(args, tuple):
+            record.args = tuple(self._scrub_text(arg) for arg in args)
         else:
-            record.args = self._scrub(record.args)
+            record.args = self._scrub_text(args)
         return True
 
-    def _scrub(self, value):
+    def _scrub_atom(self, key, value):
+        if isinstance(key, str) and key.lower() in self._blank_atoms:
+            if isinstance(value, (bytes, bytearray)):
+                return b""
+            return ""
+        return self._scrub_text(value)
+
+    def _scrub_text(self, value):
         if isinstance(value, str):
             return self._query.sub("", value)
+        if isinstance(value, (bytes, bytearray)):
+            return self._query_bytes.sub(b"", value)
         return value
 
 

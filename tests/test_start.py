@@ -1,8 +1,11 @@
 import hashlib
+import io
 import logging
 import os
+import sys
 import threading
 import unittest
+from datetime import timedelta
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
@@ -131,6 +134,74 @@ class StartEmailTests(unittest.TestCase):
         self.assertNotIn(email, captured)
         self.assertNotIn("utm_source=meta", captured)
         self.assertNotIn(email, response.headers["Location"])
+
+    def test_gunicorn_access_log_blanks_query_atoms_without_keyerror(self):
+        from gunicorn.config import Config
+        from gunicorn.glogging import Logger, SafeAtoms
+
+        email = "sentinel-email@example.com"
+        cookie = "opaque-session-id-sentinel"
+        query = "email=%s&utm_source=meta" % email
+        raw_uri = "/start?%s" % query
+        fmt = (
+            "%(s)s %(r)s U=%(U)s q=%(q)s qs=%({query_string}e)s "
+            "raw=%({raw_uri}e)s xff=%({x-forwarded-for}i)s"
+        )
+        environ = {
+            "REMOTE_ADDR": "127.0.0.1",
+            "REQUEST_METHOD": "GET",
+            "RAW_URI": raw_uri,
+            "SERVER_PROTOCOL": "HTTP/1.1",
+            "PATH_INFO": "/start",
+            "QUERY_STRING": query,
+            "HTTP_COOKIE": "session=%s" % cookie,
+        }
+
+        class _Resp(object):
+            status = "302"
+            headers = [("Set-Cookie", "session=%s; HttpOnly; SameSite=Lax" % cookie)]
+            sent = 0
+
+        # Header atom is missing on purpose. SafeAtoms returns "-"; a plain dict raises.
+        req_headers = [("Cookie", "session=%s" % cookie)]
+
+        atoms = SafeAtoms({
+            "q": query,
+            "{query_string}e": query,
+            "{raw_uri}e": raw_uri,
+            "r": "GET %s HTTP/1.1" % raw_uri,
+            "U": "/start",
+        })
+        self.assertIs(type(atoms), SafeAtoms)
+        record = logging.LogRecord(
+            "gunicorn.access", logging.INFO, "", 0, fmt, atoms, None
+        )
+        self.assertTrue(grader._DropQueryStringFilter().filter(record))
+        self.assertIs(type(record.args), SafeAtoms)
+        self.assertEqual(record.args["{x-forwarded-for}i"], "-")
+        rendered = record.getMessage()
+        self.assertNotIn(email, rendered)
+        self.assertNotIn(cookie, rendered)
+        self.assertNotIn("KeyError", rendered)
+
+        cfg = Config()
+        cfg.set("accesslog", "-")
+        cfg.set("access_log_format", fmt)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = stdout, stderr
+        try:
+            glogger = Logger(cfg)
+            glogger.access(_Resp(), req_headers, environ, timedelta(microseconds=1500))
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+        output = stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn("KeyError", output)
+        self.assertNotIn("Logging error", output)
+        self.assertNotIn(email, output)
+        self.assertNotIn(cookie, output)
+        self.assertIn("xff=-", output)
+        self.assertIn("U=/start", output)
 
     def test_onrender_start_does_not_put_email_in_location(self):
         response = self.client.get(
