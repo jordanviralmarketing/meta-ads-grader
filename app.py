@@ -35,14 +35,22 @@ class _DropQueryStringFilter(logging.Filter):
     updated in place: replacing it drops the missing-key behavior, and a
     header atom such as %({x-forwarded-for}i)s then raises KeyError. The
     logging error dump prints the whole atom dict, query and session cookie
-    included. q and {query_string}e have no leading "?", and {raw_uri}e
+    included.     q and {query_string}e have no leading "?", and {raw_uri}e
     carries the path plus the query, so those atoms are blanked by name.
+    {cookie}i and {set-cookie}o are blanked too: a broken format makes
+    logging print every atom to stderr, which would leak the session id.
     Request-line atoms that still contain "?..." are stripped as before.
     """
 
     _query = re.compile(r"\?[^\s\"']*")
     _query_bytes = re.compile(br"\?[^\s\"']*")
-    _blank_atoms = frozenset({"q", "{query_string}e", "{raw_uri}e"})
+    _blank_atoms = frozenset({
+        "q",
+        "{query_string}e",
+        "{raw_uri}e",
+        "{cookie}i",
+        "{set-cookie}o",
+    })
 
     def filter(self, record):
         record.msg = self._scrub_text(record.msg)

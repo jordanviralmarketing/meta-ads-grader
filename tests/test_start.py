@@ -203,6 +203,49 @@ class StartEmailTests(unittest.TestCase):
         self.assertIn("xff=-", output)
         self.assertIn("U=/start", output)
 
+    def test_broken_access_log_format_does_not_dump_email_or_cookie(self):
+        from gunicorn.config import Config
+        from gunicorn.glogging import Logger
+
+        email = "sentinel-email@example.com"
+        cookie = "opaque-session-id-sentinel"
+        query = "email=%s&utm_source=meta" % email
+        # A bad conversion forces logging to print the record to stderr.
+        fmt = "%(s)s q=%(q)s cookie=%({cookie}i)s set=%({set-cookie}o)s bad=%(q)Z"
+        environ = {
+            "REMOTE_ADDR": "127.0.0.1",
+            "REQUEST_METHOD": "GET",
+            "RAW_URI": "/start?%s" % query,
+            "SERVER_PROTOCOL": "HTTP/1.1",
+            "PATH_INFO": "/start",
+            "QUERY_STRING": query,
+        }
+
+        class _Resp(object):
+            status = "302"
+            headers = [("Set-Cookie", "session=%s; HttpOnly; SameSite=Lax" % cookie)]
+            sent = 0
+
+        req_headers = [("Cookie", "session=%s" % cookie)]
+        cfg = Config()
+        cfg.set("accesslog", "-")
+        cfg.set("access_log_format", fmt)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = stdout, stderr
+        try:
+            glogger = Logger(cfg)
+            glogger.access(_Resp(), req_headers, environ, timedelta(microseconds=1500))
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+        err = stderr.getvalue()
+        out = stdout.getvalue()
+        self.assertIn("Logging error", err)
+        self.assertNotIn(email, err)
+        self.assertNotIn(cookie, err)
+        self.assertNotIn(email, out)
+        self.assertNotIn(cookie, out)
+
     def test_onrender_start_does_not_put_email_in_location(self):
         response = self.client.get(
             "/start?email=a@b.co&utm_source=meta",
