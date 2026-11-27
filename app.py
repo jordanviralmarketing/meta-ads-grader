@@ -490,7 +490,7 @@ def view_report(report_id):
     )
 
 def score_categories(campaign_insights, ad_insights):
-    """Score the first 4 categories based on blog principles."""
+    """Score four categories, then derive Overall System Alignment from them."""
     categories = []
 
     # 1. Budget Capacity & Structure
@@ -561,16 +561,7 @@ def score_categories(campaign_insights, ad_insights):
         "notes": fatigue_notes,
     })
 
-    # 4. Enhancement Risk (placeholder — full check needs creative-level data)
-    enhancement_score = 70
-    enhancement_notes = ["Enhancement risk requires creative-level review. Check for high-risk Advantage+ features (text rewriting, summaries, overlays) especially on lead-gen campaigns."]
-    categories.append({
-        "name": "Enhancement Risk",
-        "score": enhancement_score,
-        "notes": enhancement_notes,
-    })
-
-    # 5. Signal Quality & Optimization Alignment
+    # 4. Signal Quality & Optimization Alignment
     signal_score = 65
     signal_notes = []
     if campaign_insights:
@@ -594,8 +585,8 @@ def score_categories(campaign_insights, ad_insights):
         "notes": signal_notes,
     })
 
-    # 6. Overall System Alignment
-    # Derived from the other categories — coherence check
+    # 5. Overall System Alignment
+    # Average of the four categories above. Not included in its own average.
     avg_other = sum(c["score"] for c in categories) / len(categories)
     alignment_score = int(avg_other)
     alignment_notes = []
