@@ -76,6 +76,8 @@ The Conversions API call uses `META_CAPI_ACCESS_TOKEN`. If that variable is miss
 
 Only the browser session that created the report fires the grade view, and only once per account. Opening a shared `/report/<id>` link does not fire the pixel event, the Google Ads conversion, or the Conversions API call. Server-side session files expire after about two hours.
 
+`GET /start` accepts `email`, `utm_*`, and `fbclid` from the GHL form. A valid address is stored lowercased in the server-side session and later hashed as `em` on `GraderGradeView`. The response is an empty 302 to `https://theviralmarketingcompany.com/meta-ads-grader-thanks` with only `utm_*` and `fbclid`. The email is not in that URL, the body, or the logs. The session cookie is host-only and `SameSite=Lax`, so the thanks page's Connect link must return to the same grader host (`/connect` on that host) for the address to survive Meta OAuth.
+
 `/connect` stores `gclid`, `gbraid`, `wbraid`, `fbclid`, `_gl` and UTM parameters in the server-side session, and the OAuth callback re-appends them to `/select-account` so attribution survives the Facebook redirect. Form submit and Connect-click events fire from GTM on theviralmarketingcompany.com, not from this app.
 
 Grades are served at `/report/<opaque id>`. Old `/audit/<act_id>` links redirect to `/report-unavailable` before any tag runs, and that redirect does not send the old URL as the next page's referrer. Report responses send `X-Robots-Tag: noindex, nofollow` and a matching robots meta tag. `/report` and `/audit` are not blocked in robots.txt, and there is no sitemap entry for them. The landing redirect (`/`) stays indexable.
